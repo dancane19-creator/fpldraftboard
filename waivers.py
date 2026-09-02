@@ -28,7 +28,7 @@ TEMPLATE = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Waiver Targets</title>
+<title>Pickup Targets</title>
 <style>
   :root{color-scheme:light dark;
     --surface:#fcfcfb;--plane:#f9f9f7;--sunk:#f0efec;
@@ -110,6 +110,19 @@ TEMPLATE = r"""<!DOCTYPE html>
   .flag.pen{border-color:var(--good);color:var(--good);font-weight:700}
   .flag.dc{border-color:var(--accent);color:var(--accent);font-weight:700}
   .flag.hurt{border-color:var(--crit);color:var(--crit);font-weight:700}
+  .tier{display:inline-block;font-size:10px;font-weight:700;padding:1px 6px;
+    border-radius:9px;margin-left:5px;letter-spacing:.02em}
+  .tier.hi{background:color-mix(in srgb,var(--good) 16%,transparent);color:var(--good)}
+  .tier.mid{background:color-mix(in srgb,var(--warn) 20%,transparent);color:#8a6200}
+  .tier.lo{background:color-mix(in srgb,var(--crit) 16%,transparent);color:var(--crit)}
+  @media(prefers-color-scheme:dark){.tier.mid{color:var(--warn)}}
+  .top1note{font-size:11.5px;color:var(--ink-2);margin-top:4px;font-style:italic}
+  .needs{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+  .needchip{font-size:11.5px;padding:4px 10px;border-radius:8px;
+    border:1px solid var(--rule);color:var(--ink-2)}
+  .needchip b{color:var(--ink)}
+  .needchip.gap{border-color:var(--crit);color:var(--crit)}
+  .needchip.gap b{color:var(--crit)}
   .warnbar{background:color-mix(in srgb,var(--warn) 15%,transparent);
     border:1px solid var(--warn);border-radius:8px;padding:10px 14px;
     margin-bottom:13px;font-size:13.5px}
@@ -121,7 +134,7 @@ TEMPLATE = r"""<!DOCTYPE html>
 <body>
 <div class="wrap">
   <div class="top">
-    <span class="lg" id="lgName">Waiver Targets</span>
+    <span class="lg" id="lgName">Pickup Targets</span>
     <span class="chip" id="status"><span class="dot"></span><span id="statusTxt">loading</span></span>
     <span class="chip" id="chipGw">GW -</span>
     <span class="chip" id="chipTeam">-</span>
@@ -135,11 +148,15 @@ TEMPLATE = r"""<!DOCTYPE html>
   <div class="cols">
     <div>
       <div class="card">
-        <h3>Waiver priority</h3>
-        <div class="sub">Claims process in order. If number one is gone the claim
-          falls through to number two, so a long shot at the top costs nothing.
-          Gain is points per week versus your weakest <em>starter</em> at that
-          position, since beating your bench changes nothing.</div>
+        <h3>Pickup priority</h3>
+        <div class="sub">Claims process in order. If number one is already taken
+          by another manager, the claim falls through to number two automatically
+          - so the best player available costs nothing to rank first, even if
+          he's likely to get sniped. Gain is expected points per week versus
+          your weakest <em>starter</em> at that position (beating your bench
+          changes nothing), already discounted for how likely each player is to
+          actually start.</div>
+        <div class="needs" id="needs"></div>
         <div id="claims"></div>
       </div>
     </div>
@@ -200,6 +217,15 @@ function weakestAt(pos){
 }
 
 function stCls(r){ return r>=0.85?"hi":r>=0.5?"mid":"lo"; }
+/* Starter confidence: is this a nailed starter, a rotation risk, or a bench
+   player, factoring in injury/suspension availability alongside start rate. */
+function tier(p){
+  if(p.ch<0.75) return {label:"Doubtful",cls:"lo"};
+  if(p.sr>=0.85) return {label:"Confirmed starter",cls:"hi"};
+  if(p.sr>=0.5)  return {label:"Rotation risk",cls:"mid"};
+  return {label:"Bench / fringe",cls:"lo"};
+}
+function tierBadge(p){ const t=tier(p); return `<span class="tier ${t.cls}">${t.label}</span>`; }
 function fdrHtml(p){
   if(!p.fdr||!p.fdr.length) return "";
   return `<span class="fdr" title="next fixtures, 1 easy to 5 hard">`+
@@ -216,23 +242,38 @@ function flags(p){
 function render(){
   const repl={}; POS.forEach(pos=>repl[pos]=replacement(pos));
 
+  // Needs strip: how many starting slots at each position are filled by a
+  // confirmed starter, versus a rotation risk or an empty slot outright.
+  document.getElementById("needs").innerHTML = POS.map(pos=>{
+    const g = mySquad().filter(p=>p.pos===pos).sort((a,b)=>b.pw-a.pw);
+    const need = STARTERS[pos]||3;
+    const locked = g.slice(0,need).filter(p=>tier(p).cls==="hi").length;
+    const gap = locked < need;
+    return `<span class="needchip ${gap?"gap":""}">${pos} <b>${locked}/${need}</b> locked</span>`;
+  }).join("");
+
   let free = PLAYERS.filter(p=>!owned.has(p.i));
   if(posFilter) free = free.filter(p=>p.pos===posFilter);
 
   const rows = free.map(p=>({
     p, gain: p.pw - (repl[p.pos]||0), pinned: pinned.has(p.i)
   }));
-  // Pinned first, then by what they actually add.
+  // Pinned first, then by what they actually add (pw is already discounted
+  // for start/rotation risk, so this doubles as "most valuable given need").
   rows.sort((a,b)=> (b.pinned?1:0)-(a.pinned?1:0) || b.gain-a.gain);
   const top = rows.slice(0,14);
 
   document.getElementById("claims").innerHTML = top.length ? top.map((r,i)=>{
     const p=r.p, drop=weakestAt(p.pos);
     const cls = r.gain>0?"pos-good":"pos-bad";
+    const top1 = (i===0 && !r.pinned)
+      ? `<div class="top1note">Free claim - if he's already gone this falls
+          through to #2 automatically, so there's no downside to aiming high.</div>`
+      : "";
     return `<div class="claim ${r.pinned?"pin":""}">
       <div class="rank">${i+1}</div>
       <div>
-        <div class="nm">${p.n}
+        <div class="nm">${p.n}${tierBadge(p)}
           <button class="pinbtn" data-pin="${p.i}">${r.pinned?"unpin":"pin"}</button>
         </div>
         <div class="sub2">${p.pos} &middot; ${p.tm} &middot;
@@ -242,6 +283,7 @@ function render(){
         <div class="drop">upgrades on <b>${replName(p.pos)}</b>
           (${(repl[p.pos]||0).toFixed(1)} pts/wk, your weakest starting ${p.pos})
           &middot; roster spot from <b>${drop?drop.n:"-"}</b></div>
+        ${top1}
       </div>
       <div class="gain">
         <div class="g1 ${cls}">${r.gain>0?"+":""}${r.gain.toFixed(1)}</div>
@@ -259,7 +301,7 @@ function render(){
     const w = weakestAt(pos);
     for(const p of g){
       html += `<div class="sq ${w&&p.i===w.i?"weak":""}">
-        <div><div class="sn">${p.n}</div>
+        <div><div class="sn">${p.n}${tierBadge(p)}</div>
           <div class="sm">${p.tm} &middot;
             <span class="st ${stCls(p.sr)}">${Math.round(p.sr*100)}% start</span>
             ${flags(p)}${fdrHtml(p)}</div></div>
@@ -348,7 +390,8 @@ def build(players: list[Player], my_ids: set[int], owned: set[int],
         rows.append({
             "i": p.draft_id, "n": p.name, "pos": p.pos, "tm": p.team_short,
             "pw": round(p.proj_week, 2), "sr": round(p.start_rate, 2),
-            "fm": round(p.form, 1), "tp": int(p.season_points),
+            "ch": round(p.chance, 2), "fm": round(p.form, 1),
+            "tp": int(p.season_points),
             "fdr": p.fdr[:5], "f": p.flags[:3],
             "s": f"{p.name} {p.full_name}".lower(),
         })
