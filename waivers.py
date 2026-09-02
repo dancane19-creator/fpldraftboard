@@ -110,6 +110,7 @@ TEMPLATE = r"""<!DOCTYPE html>
   .flag.pen{border-color:var(--good);color:var(--good);font-weight:700}
   .flag.dc{border-color:var(--accent);color:var(--accent);font-weight:700}
   .flag.hurt{border-color:var(--crit);color:var(--crit);font-weight:700}
+  .flag.new{border-color:var(--accent);color:var(--accent);font-weight:700}
   .tier{display:inline-block;font-size:10px;font-weight:700;padding:1px 6px;
     border-radius:9px;margin-left:5px;letter-spacing:.02em}
   .tier.hi{background:color-mix(in srgb,var(--good) 16%,transparent);color:var(--good)}
@@ -220,6 +221,7 @@ function stCls(r){ return r>=0.85?"hi":r>=0.5?"mid":"lo"; }
 /* Starter confidence: is this a nailed starter, a rotation risk, or a bench
    player, factoring in injury/suspension availability alongside start rate. */
 function tier(p){
+  if(p.f&&p.f.includes("NEW")) return {label:"New / unproven",cls:"mid"};
   if(p.ch<0.75) return {label:"Doubtful",cls:"lo"};
   if(p.sr>=0.85) return {label:"Confirmed starter",cls:"hi"};
   if(p.sr>=0.5)  return {label:"Rotation risk",cls:"mid"};
@@ -233,7 +235,7 @@ function fdrHtml(p){
 }
 function flags(p){
   return (p.f||[]).map(f=>{
-    const c=f==="PENS"?"pen":f==="DEFCON"?"dc"
+    const c=f==="PENS"?"pen":f==="DEFCON"?"dc":f==="NEW"?"new"
       :/injur|doubt|suspend|unavail|fit|not in squad/.test(f)?"hurt":"";
     return `<span class="flag ${c}">${f}</span>`;
   }).join("");

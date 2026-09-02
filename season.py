@@ -113,6 +113,19 @@ def enrich(players: list[Player], snap: dict) -> None:
         p.exp_minutes = exp_mins
         p.proj_week = p.p90 * (exp_mins / 90.0)
 
+        # A player with zero minutes this season has no start_rate to trust -
+        # not necessarily because he is out of favour, but because a new
+        # signing, a transfer into the league, or a long-term injury return
+        # has no observed sample yet. Falling straight to 0 makes him
+        # disappear from free-agent lists exactly when he might be the best
+        # speculative pickup available, so fall back to FPL's own next-round
+        # expectation (which already accounts for fixture and expected role)
+        # instead of erasing him.
+        if mins == 0 and p.ep_next > 0:
+            p.proj_week = p.ep_next * p.chance
+            if "NEW" not in p.flags:
+                p.flags = p.flags + ["NEW"]
+
 
 def my_replacement(my_squad: list[Player], pos: str) -> float:
     """Weekly points of the man a new signing would actually displace.
