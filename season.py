@@ -46,6 +46,10 @@ BASELINE_P90 = {"GKP": 3.2, "DEF": 3.0, "MID": 3.2, "FWD": 3.0}
 # Defensive contribution thresholds, unchanged for 2026/27.
 DC_THRESHOLD = {"DEF": 10, "MID": 12, "FWD": 12, "GKP": 999}
 
+# Used to turn the preseason model's full-season projection into a weekly
+# rate for players with no in-season minutes to observe yet.
+WEEKS_IN_SEASON = 38.0
+
 
 def is_in_season(snap: dict) -> bool:
     game = snap.get("game") or {}
@@ -118,11 +122,21 @@ def enrich(players: list[Player], snap: dict) -> None:
         # signing, a transfer into the league, or a long-term injury return
         # has no observed sample yet. Falling straight to 0 makes him
         # disappear from free-agent lists exactly when he might be the best
-        # speculative pickup available, so fall back to FPL's own next-round
-        # expectation (which already accounts for fixture and expected role)
-        # instead of erasing him.
-        if mins == 0 and p.ep_next > 0:
-            p.proj_week = p.ep_next * p.chance
+        # speculative pickup available.
+        #
+        # p.proj is the preseason model's full-season estimate, already
+        # blending price, FPL's own draft_rank, ep_next and (for anyone with
+        # a top-flight track record) last season's output, then discounted by
+        # expected start share - it is the "FPL ranking method" signal,
+        # not just next week's number. ep_next alone tends to lowball a
+        # fresh transfer or new signing because FPL's live model has no
+        # current-club sample either, so take whichever of the two paints
+        # the more optimistic, better-informed picture rather than the more
+        # conservative one.
+        if mins == 0 and (p.ep_next > 0 or p.proj > 0):
+            from_draft_model = (p.proj / WEEKS_IN_SEASON) if p.proj > 0 else 0.0
+            from_next_round = p.ep_next * p.chance
+            p.proj_week = max(from_draft_model, from_next_round)
             if "NEW" not in p.flags:
                 p.flags = p.flags + ["NEW"]
 
