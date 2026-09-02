@@ -1,5 +1,7 @@
 # FPL Draft Board
 
+[![GitHub](https://img.shields.io/badge/GitHub-dancane19--creator%2Ffpldraftboard-181717?logo=github)](https://github.com/dancane19-creator/fpldraftboard)
+
 A best-available draft assistant for FPL Draft 2026/27. Ranks every player by
 **VORP** (value over replacement player), tracks picks live, and tells you who
 to take on the clock.
