@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FPL Draft Board - Step by step</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --surface: #fcfcfb; --plane: #f9f9f7;
+    --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --rule: #c3c2b7; --border: rgba(11,11,11,0.10);
+    --accent: #2a78d6; --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+    --code-bg: #f0efec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface: #1a1a19; --plane: #0d0d0d; --ink: #ffffff; --ink-2: #c3c2b7;
+      --muted: #898781; --grid: #2c2c2a; --rule: #383835;
+      --border: rgba(255,255,255,0.10); --accent: #3987e5; --code-bg: #232322;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--plane); color: var(--ink);
+    font: 15.5px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 28px 20px 90px; }
+  h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.02em; }
+  .sub { color: var(--ink-2); font-size: 14px; margin-bottom: 8px; }
+  .toc {
+    display: flex; gap: 6px; flex-wrap: wrap; margin: 18px 0 26px;
+    padding-bottom: 18px; border-bottom: 1px solid var(--grid);
+  }
+  .toc a {
+    font-size: 13px; text-decoration: none; color: var(--ink-2);
+    border: 1px solid var(--rule); border-radius: 20px; padding: 5px 13px;
+  }
+  .toc a:hover { background: var(--surface); color: var(--ink); }
+
+  h2 {
+    font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--muted); margin: 38px 0 4px; font-weight: 700;
+  }
+  h2 + .t { font-size: 21px; font-weight: 650; margin: 0 0 16px;
+            letter-spacing: -0.015em; }
+
+  .step {
+    background: var(--surface); border: 1px solid var(--border);
+    border-left: 3px solid var(--accent); border-radius: 10px;
+    padding: 15px 18px; margin-bottom: 12px;
+  }
+  .step .n {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.07em;
+    color: var(--accent); text-transform: uppercase; margin-bottom: 5px;
+  }
+  .step p { margin: 7px 0; }
+  .step p:first-of-type { margin-top: 2px; }
+
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 7px; padding: 11px 13px; overflow-x: auto;
+    font: 13.5px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+    margin: 10px 0;
+  }
+  code { font: 13px ui-monospace, "Cascadia Mono", Consolas, monospace;
+         background: var(--code-bg); padding: 1.5px 5px; border-radius: 4px; }
+  pre code { background: none; padding: 0; font-size: inherit; }
+
+  ul.check { list-style: none; padding: 0; margin: 10px 0; }
+  ul.check li {
+    padding: 5px 0 5px 27px; position: relative; font-size: 14.5px;
+  }
+  ul.check li::before {
+    content: ""; position: absolute; left: 0; top: 10px;
+    width: 14px; height: 14px; border: 1.5px solid var(--rule);
+    border-radius: 3px;
+  }
+
+  table { width: 100%; border-collapse: collapse; margin: 12px 0;
+          background: var(--surface); border: 1px solid var(--border);
+          border-radius: 9px; overflow: hidden; }
+  th { text-align: left; font-size: 11px; letter-spacing: 0.06em;
+       text-transform: uppercase; color: var(--muted); font-weight: 700;
+       padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+  td { padding: 9px 12px; border-bottom: 1px solid var(--grid);
+       vertical-align: top; font-size: 14.5px; }
+  tr:last-child td { border-bottom: none; }
+
+  .note {
+    border-radius: 9px; padding: 13px 16px; margin: 14px 0; font-size: 14.5px;
+    border: 1px solid var(--border);
+  }
+  .note.warn { background: color-mix(in srgb, var(--warning) 15%, transparent);
+               border-color: var(--warning); }
+  .note.key  { background: color-mix(in srgb, var(--accent) 11%, transparent);
+               border-color: var(--accent); }
+  .note.good { background: color-mix(in srgb, var(--good) 11%, transparent);
+               border-color: var(--good); }
+  .note .h { font-weight: 700; margin-bottom: 3px; }
+
+  .pill { display: inline-block; font-size: 11px; font-weight: 700;
+          padding: 1px 7px; border-radius: 4px; vertical-align: 1px; }
+  .pill.red { background: var(--critical); color: #fff; }
+  .pill.grn { background: var(--good); color: #fff; }
+
+  .fault { font-weight: 650; color: var(--critical); }
+  .muted { color: var(--muted); }
+  hr { border: none; border-top: 1px solid var(--grid); margin: 34px 0; }
+  @media print {
+    .toc { display: none; }
+    body { background: #fff; font-size: 11pt; }
+    .step, table, .note { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>FPL Draft Board</h1>
+  <div class="sub">Step by step, Windows / PowerShell. You never need a league ID.</div>
+
+  <div class="toc">
+    <a href="#once">1. One-time setup</a>
+    <a href="#before">2. Before each draft</a>
+    <a href="#during">3. During the draft</a>
+    <a href="#shape">4. What good looks like</a>
+    <a href="#after">5. After</a>
+    <a href="#fix">Troubleshooting</a>
+    <a href="#ref">Commands</a>
+  </div>
+
+  <h2 id="once">Part 1</h2>
+  <div class="t">One-time setup</div>
+
+  <div class="step">
+    <div class="n">1.1 &middot; Check Python</div>
+    <pre><code>py --version</code></pre>
+    <p>Expect <code>Python 3.12.x</code> or similar. If you get "not recognized":</p>
+    <pre><code>winget install Python.Python.3.12</code></pre>
+    <p>Close PowerShell, reopen, try again.</p>
+    <div class="note warn"><div class="h">Use <code>py</code>, never <code>python3</code></div>
+      <code>python3</code> does not exist on Windows. If <code>py</code> fails
+      but <code>python</code> works, use <code>python</code>.</div>
+  </div>
+
+  <div class="step">
+    <div class="n">1.2 &middot; Unzip somewhere permanent</div>
+    <p>Not Downloads. Something like <code>C:\Users\dcane\fpl-draft</code>.</p>
+  </div>
+
+  <div class="step">
+    <div class="n">1.3 &middot; Only if you want the Excel version</div>
+    <pre><code>py -m pip install openpyxl</code></pre>
+    <p class="muted">The HTML board needs nothing installed.</p>
+  </div>
+
+  <hr>
+
+  <h2 id="before">Part 2</h2>
+  <div class="t">Before each draft &middot; about 3 minutes</div>
+
+  <div class="step">
+    <div class="n">2.1 &middot; Open PowerShell in the folder</div>
+    <pre><code>cd C:\Users\dcane\fpl-draft</code></pre>
+  </div>
+
+  <div class="step">
+    <div class="n">2.2 &middot; Pull fresh player data</div>
+    <pre><code>py draft.py --deep --teams 10 fetch</code></pre>
+    <p>Set <code>--teams</code> to your real league size. It decides where
+       replacement level sits, which drives every number downstream.
+       <code>--deep</code> adds last season's history, takes a minute or two,
+       and is worth it.</p>
+    <ul class="check">
+      <li>It printed a player count in the hundreds</li>
+      <li>It printed a count of players with last-season history</li>
+    </ul>
+    <div class="note warn"><div class="h">If it printed 0 players, stop</div>
+      The Draft game isn't serving data. Nothing downstream will work.</div>
+  </div>
+
+  <div class="step">
+    <div class="n">2.3 &middot; Clear old draft state</div>
+    <pre><code>py draft.py reset</code></pre>
+    <p>Do this after every mock draft. Skip it and the board thinks 150 players
+       are already gone.</p>
+  </div>
+
+  <div class="step">
+    <div class="n">2.4 &middot; Build the board</div>
+    <pre><code>py draft.py --teams 10 --slot 4 export</code></pre>
+    <p><code>--slot</code> is your pick number in round one. Don't know it yet?
+       Put anything, there's a dropdown in the page.</p>
+    <p class="muted">Optionally, for prep and note-taking:</p>
+    <pre><code>py draft.py --teams 10 export-xlsx</code></pre>
+  </div>
+
+  <div class="step">
+    <div class="n">2.5 &middot; Open draft-board.html</div>
+    <p>Double-click it in File Explorer.</p>
+    <ul class="check">
+      <li><b>No yellow "Sample data" banner.</b> If you see one, you exported
+          from the offline test set. Redo 2.2 then 2.4.</li>
+      <li>Player names are real footballers</li>
+      <li>Header shows the right league size and your slot</li>
+    </ul>
+  </div>
+
+  <hr>
+
+  <h2 id="during">Part 3</h2>
+  <div class="t">During the draft</div>
+
+  <div class="note key"><div class="h">The whole loop</div>
+    Someone picks, you type their name, you hit Enter. That's it.</div>
+
+  <table>
+    <thead><tr><th>Situation</th><th>What you do</th></tr></thead>
+    <tbody>
+      <tr><td>Someone else drafted a player</td>
+          <td>Type a few letters, press <b>Enter</b></td></tr>
+      <tr><td><b>You</b> drafted a player</td>
+          <td>Type his name, press <b>Shift+Enter</b></td></tr>
+      <tr><td>Made a mistake</td><td>Click <b>Undo</b></td></tr>
+      <tr><td>Want to see only defenders</td><td>Click <b>DEF</b></td></tr>
+      <tr><td>Start over</td><td>Click <b>Reset</b></td></tr>
+    </tbody>
+  </table>
+
+  <p>The cursor stays in the search box, so you can keep typing as picks fly.</p>
+
+  <p><b>When it's your turn, read the TAKE NOW panel.</b> Player, the reason in
+     one sentence, three alternates. In a hurry, that's all you need.</p>
+
+  <p><b>When you have a moment, check two columns before committing:</b></p>
+
+  <table>
+    <thead><tr><th>Column</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><b>Lasts</b></td>
+          <td>Chance he survives to your next turn.
+              <span class="pill red">under 30%</span> take him now or lose him.
+              <span class="pill grn">over 75%</span> you can wait.</td></tr>
+      <tr><td><b>Market</b></td>
+          <td>FPL's own rank plus a coloured offset. Green <code>+60</code>
+              means the field rates him 60 spots lower than your board, so you
+              can probably wait a round and still get him.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="note good"><div class="h">The one override worth knowing</div>
+    If the top recommendation is green on both columns and someone just below is
+    red on both, <b>take the red one</b>. You'll still get the green player
+    later. This is the single most valuable judgement call the tool sets up for
+    you, and it's the reason those columns exist.</div>
+
+  <p><b>Trust tiers over small VORP gaps.</b> A 4-point VORP difference is
+     inside the noise of preseason projections. A tier break is a real cliff.</p>
+
+  <p class="muted">Your picks live in the address bar, so a refresh won't lose
+     the draft. Bookmark the URL mid-draft for a checkpoint.</p>
+
+  <hr>
+
+  <h2 id="shape">Part 4</h2>
+  <div class="t">What good looks like</div>
+
+  <p>Roughly what the maths produces, so you can sanity-check it live.</p>
+
+  <table>
+    <thead><tr><th style="width:90px">Rounds</th><th>Usually</th></tr></thead>
+    <tbody>
+      <tr><td><b>1-4</b></td><td>Midfielders and forwards. This is where the VORP cliffs are.</td></tr>
+      <tr><td><b>5-9</b></td><td>More attackers, your first genuine defenders</td></tr>
+      <tr><td><b>10-13</b></td><td>Defenders, especially high-DEFCON ones, first keeper</td></tr>
+      <tr><td><b>14-15</b></td><td>Second keeper, upside picks, promoted-team fliers</td></tr>
+    </tbody>
+  </table>
+
+  <p><span class="fault">If the board tells you to take a keeper in round 3,</span>
+     something is wrong with the data. Check for the sample-data banner.</p>
+
+  <div class="note warn"><div class="h">Promoted teams</div>
+    Never draft a Coventry, Ipswich or Hull player before round 11. Their whole
+    value is that they're free. One exception: <b>Leif Davis</b> (Ipswich, LB,
+    18 assists in the promotion season) is worth a round or two earlier.
+    Full detail in <code>SLEEPERS.md</code>.</div>
+
+  <hr>
+
+  <h2 id="after">Part 5</h2>
+  <div class="t">After the draft</div>
+
+  <ul class="check">
+    <li><code>py draft.py reset</code> if you'll run another draft</li>
+    <li>Keep <code>SLEEPERS.md</code> handy for early-season waivers</li>
+    <li><b>Charlie Hughes</b> (Hull, CB) is out for Gameweek 1 so he'll go
+        undrafted. Highest defensive-actions rate of any promoted-club defender
+        at 11.8 per 90. Claim him on waivers the moment he's fit.</li>
+  </ul>
+
+  <hr>
+
+  <h2 id="fix">Troubleshooting</h2>
+  <div class="t">When something breaks</div>
+
+  <table>
+    <thead><tr><th style="width:44%">Symptom</th><th>Fix</th></tr></thead>
+    <tbody>
+      <tr><td><code>'python3' is not recognized</code></td>
+          <td>Use <code>py</code>. <code>python3</code> is Mac/Linux only.</td></tr>
+      <tr><td><code>unrecognized arguments: --deep</code></td>
+          <td>Old copy. Flags now work before or after the subcommand. Re-unzip the latest bundle.</td></tr>
+      <tr><td><code>fetch</code> printed 0 players</td>
+          <td>The Draft game isn't serving data yet. Nothing works until it does.</td></tr>
+      <tr><td>Yellow "Sample data" banner</td>
+          <td>You exported from the test set. Run <code>fetch</code>, then <code>export</code> again.</td></tr>
+      <tr><td>Excel shows <code>#NAME?</code> in VORP</td>
+          <td>Your Excel predates 2019 and lacks MINIFS. Use the HTML board.</td></tr>
+      <tr><td>Everything says 0 players left</td>
+          <td>You forgot <code>py draft.py reset</code> after a mock draft.</td></tr>
+    </tbody>
+  </table>
+
+  <hr>
+
+  <h2 id="ref">Reference</h2>
+  <div class="t">Every command</div>
+
+<pre><code>py draft.py --deep --teams 10 fetch      # pull data, once per draft day
+py draft.py --teams 10 --slot 4 export   # build the HTML board
+py draft.py --teams 10 export-xlsx       # build the Excel board
+py draft.py reset                        # wipe draft state
+py draft.py --slot 4 best                # recommendation in the terminal
+py draft.py live                         # interactive terminal mode
+py draft.py board DEF -n 30              # top 30 defenders</code></pre>
+
+  <div class="note key"><div class="h">You never need a league ID</div>
+    Player data comes from <code>draft.premierleague.com/api/bootstrap-static</code>,
+    which is public and needs no login. A league ID only unlocks your own
+    league's standings and rivals' rosters, and you're tracking those by hand.</div>
+
+</div>
+</body>
+</html>

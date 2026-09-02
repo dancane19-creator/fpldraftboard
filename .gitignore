@@ -1,0 +1,8 @@
+# Local run state, never useful to anyone else
+cache/
+draft_state.json
+mock_snapshot.json
+draft-board.html
+draft-board.xlsx
+__pycache__/
+*.pyc
