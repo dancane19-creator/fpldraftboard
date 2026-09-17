@@ -73,14 +73,26 @@ def _row(p: Player) -> dict:
     """The fields the phone needs for one player, and nothing else."""
     # Preseason flags like "no PL history" explain a projection that no longer
     # exists once real matches are in; only availability and set pieces matter.
-    flags = [f for f in p.flags if "history" not in f.lower()][:3]
+    # The "% fit" flag is replaced by the status pill on the phone.
+    flags = [f for f in p.flags
+             if "history" not in f.lower() and not f.endswith("% fit")][:3]
     return {
-        "i": p.draft_id, "n": p.name, "pos": p.pos, "tm": p.team_short,
-        "pw": round(p.proj_week, 2), "sr": round(p.start_rate, 2),
+        "i": p.draft_id, "n": p.name, "fn": p.full_name, "pos": p.pos,
+        "tm": p.team_short, "club": p.team,
+        "pw": round(p.proj_week, 2), "pf": round(getattr(p, "proj_fit", p.proj_week), 2),
+        "p4": round(getattr(p, "proj_horizon", p.proj_week * 4), 2),
+        "sr": round(p.start_rate, 2),
         "fm": round(p.form, 1), "tp": int(p.season_points),
         "mn": int(p.season_minutes), "st": int(p.season_starts),
-        "fdr": p.fdr[:5], "f": flags,
-        "nw": (p.news or "")[:90],
+        "fdr": p.fdr[:5], "nx": p.next_fix[:5], "f": flags,
+        # FPL's official availability: letter, chance next round, the note,
+        # when the note changed, first GW back, GWs missed in the horizon.
+        "av": (p.status or "a").lower(),
+        "pn": round(getattr(p, "play_next", 1.0), 2),
+        "nw": (p.news or "")[:140],
+        "na": (p.news_added or "")[:10],
+        "bk": getattr(p, "back_gw", None), "ms": int(getattr(p, "misses", 0)),
+        "hl": getattr(p, "headlines", [])[:3],
         "s": f"{p.name} {p.full_name}".lower(),
     }
 
@@ -105,7 +117,7 @@ def _next_event(snap: dict, gw: int) -> dict:
 
 def build_payload(players: list[Player], snap: dict, my_ids: set[int],
                   owned: set[int], mine: set[int], league: dict | None,
-                  error: str | None = None) -> dict:
+                  error: str | None = None, news: dict | None = None) -> dict:
     """Everything the phone page renders, already scored.
 
     `league` is the parsed /league/{id}/details response, or None if it could
@@ -131,11 +143,24 @@ def build_payload(players: list[Player], snap: dict, my_ids: set[int],
             if r["repl"]:
                 repl_name[pos] = p.name
             squad_rows.append(r)
-    drop_name = {}
+    # Who makes way: the lowest projection over the next month, so a man who
+    # is back next week is not dropped ahead of a fit passenger, and a man
+    # out until November is.
+    drop_name, drop_why = {}, {}
     for pos in POS_ORDER:
-        g = sorted([p for p in squad if p.pos == pos], key=lambda x: x.proj_week)
+        g = sorted([p for p in squad if p.pos == pos],
+                   key=lambda x: (getattr(x, "proj_horizon", x.proj_week * 4),
+                                  x.proj_week))
         if g:
-            drop_name[pos] = g[0].name
+            d = g[0]
+            drop_name[pos] = d.name
+            ms = int(getattr(d, "misses", 0))
+            if ms >= 4:
+                drop_why[pos] = "out, no return date" if d.back_gw is None else f"out until GW{d.back_gw}"
+            elif ms > 0:
+                drop_why[pos] = f"misses {ms} more, back GW{d.back_gw}"
+            else:
+                drop_why[pos] = f"{d.proj_week:.1f}/wk"
 
     # Free agents, scored by season.waiver_targets so the phone and the
     # desktop page never disagree. All of them go over, sorted, so a pin on
@@ -149,6 +174,7 @@ def build_payload(players: list[Player], snap: dict, my_ids: set[int],
             r["over"] = repl_name.get(p.pos, "")
             r["repl_pw"] = round(t["replaces"], 2)
             r["drop"] = drop_name.get(p.pos, "")
+            r["drop_why"] = drop_why.get(p.pos, "")
             claims.append(r)
 
     # League header: your team, rank, points and the table.
@@ -193,6 +219,10 @@ def build_payload(players: list[Player], snap: dict, my_ids: set[int],
         "squad": squad_rows,
         "claims": claims,
         "owned": len(owned),
+        "horizon": 4,
+        "news": {"at": (news or {}).get("at", 0),
+                 "clubs": (news or {}).get("clubs", {}),
+                 "sources": (news or {}).get("sources", [])},
     }
 
 
@@ -209,6 +239,7 @@ class MobileFeed:
 
     OWNERSHIP_EVERY = 20.0          # seconds between league reads
     PROJECTION_EVERY = 6 * 3600.0   # matches fetch_all's cache age
+    NEWS_EVERY = 30 * 60.0          # headlines, best effort
 
     def __init__(self, players: list[Player], snap: dict, league_id: int,
                  my_ids: set[int], reload: bool = True):
@@ -221,9 +252,11 @@ class MobileFeed:
         self.mine: set[int] = set()
         self.league: dict | None = None
         self.error: str | None = None
+        self.news: dict | None = None
         self._payload: dict | None = None
         self._lock = threading.Lock()
         self._last_proj = time.time()
+        self._last_news = 0.0
         self._thread = threading.Thread(target=self._loop, daemon=True)
 
     def start(self) -> "MobileFeed":
@@ -270,9 +303,19 @@ class MobileFeed:
             players, snap = self.players, self.snap
             my_ids, owned, mine = self.my_ids, set(self.owned), set(self.mine)
             league, error = self.league, self.error
-        body = build_payload(players, snap, my_ids, owned, mine, league, error)
+        body = build_payload(players, snap, my_ids, owned, mine, league, error,
+                             news=self.news)
         with self._lock:
             self._payload = body
+
+    def _refresh_news(self) -> None:
+        try:
+            import news as news_mod
+            with self._lock:
+                players, snap = self.players, self.snap
+            self.news = news_mod.attach(players, snap)
+        except Exception:               # headlines are never load-bearing
+            pass
 
     def _loop(self) -> None:
         while True:
@@ -281,6 +324,9 @@ class MobileFeed:
             except Exception as exc:        # noqa: BLE001
                 with self._lock:
                     self.error = f"league unreachable: {exc}"[:160]
+            if time.time() - self._last_news > self.NEWS_EVERY:
+                self._refresh_news()
+                self._last_news = time.time()
             if self.reload and time.time() - self._last_proj > self.PROJECTION_EVERY:
                 try:
                     self._refresh_projections()
@@ -460,6 +506,47 @@ PAGE = r"""<!DOCTYPE html>
   .foot button{font:600 14px inherit;font-family:inherit;padding:9px 16px;
     border-radius:10px;border:1px solid var(--rule);background:var(--surface);
     color:var(--ink)}
+  /* availability pill, like Yahoo's HEALTHY / QUESTIONABLE badge */
+  .pill{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.04em;
+    padding:2px 7px;border-radius:5px;margin-left:5px;vertical-align:1px;
+    text-transform:uppercase}
+  .pill.ok{background:color-mix(in srgb,var(--good) 18%,transparent);color:var(--good)}
+  .pill.doubt{background:color-mix(in srgb,var(--warn) 20%,transparent);color:var(--warn)}
+  .pill.out{background:color-mix(in srgb,var(--crit) 16%,transparent);color:var(--crit)}
+  .row .main,.sq>div:first-child{cursor:pointer}
+
+  /* player sheet */
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:20}
+  .sheet{position:fixed;left:0;right:0;bottom:0;z-index:21;background:var(--surface);
+    border-radius:18px 18px 0 0;max-height:88vh;overflow-y:auto;
+    padding:8px 16px calc(24px + env(safe-area-inset-bottom));
+    box-shadow:0 -8px 30px rgba(0,0,0,.25);-webkit-overflow-scrolling:touch}
+  .sheet .handle{width:36px;height:4px;border-radius:2px;background:var(--rule);
+    margin:4px auto 12px}
+  .sheet .close{position:absolute;right:12px;top:12px;width:36px;height:36px;
+    border:0;border-radius:50%;background:var(--sunk);color:var(--ink);font-size:18px}
+  .sheet h2{margin:0 42px 2px 0;font-size:22px;letter-spacing:-.01em}
+  .sheet .who{font-size:13.5px;color:var(--ink-2);margin-bottom:12px}
+  .sheet .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+  .sheet .kpi{background:var(--plane);border-radius:12px;padding:9px 8px;text-align:center}
+  .sheet .kpi b{display:block;font-size:20px;font-variant-numeric:tabular-nums}
+  .sheet .kpi span{font-size:11px;color:var(--muted)}
+  .sheet .sec{margin:12px 0 0}
+  .sheet .sec h4{margin:0 0 6px;font-size:10.5px;letter-spacing:.09em;
+    text-transform:uppercase;color:var(--muted);font-weight:700}
+  .sheet .box{background:var(--plane);border-radius:12px;padding:10px 12px;font-size:14px}
+  .sheet .box+.box{margin-top:8px}
+  .sheet .box .small{font-size:12px;color:var(--muted);margin-top:4px}
+  .fixrow{display:flex;justify-content:space-between;align-items:center;
+    padding:6px 0;border-top:1px solid var(--grid);font-size:14px}
+  .fixrow:first-child{border-top:0}
+  .fixrow .d{width:22px;height:22px;border-radius:5px;display:inline-flex;
+    align-items:center;justify-content:center;color:#fff;font:700 11px/1 inherit}
+  .d1,.d2{background:#188a18}.d3{background:#8a8a84}.d4{background:#d9682e}.d5{background:#c92e2e}
+  .hl{display:block;padding:8px 0;border-top:1px solid var(--grid);color:var(--ink);
+    text-decoration:none;font-size:14px;line-height:1.3}
+  .hl:first-child{border-top:0}
+  .hl .src{display:block;font-size:11.5px;color:var(--muted);margin-top:2px}
   [hidden]{display:none!important}
 </style>
 </head>
@@ -512,6 +599,9 @@ PAGE = r"""<!DOCTYPE html>
   </div>
 </section>
 
+<div id="scrim" class="scrim" hidden></div>
+<div id="sheet" class="sheet" hidden></div>
+
 <div class="foot">
   <span id="upd">-</span>
   <a id="ghlink" class="gh" hidden target="_blank" rel="noopener">Run now</a>
@@ -541,6 +631,29 @@ function esc(s){ return String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&l
 function stCls(r){ return r>=0.85?"hi":r>=0.5?"mid":"lo"; }
 function fdr(p){ return (p.fdr&&p.fdr.length)?`<span class="fdr" aria-label="next fixtures">`+
   p.fdr.map(d=>`<i class="d${d}">${d}</i>`).join("")+`</span>`:""; }
+/* FPL's availability, as a pill. Healthy needs both the letter and the
+   percentage to agree; anything else is a doubt or an absence. */
+function avail(p){
+  const pn=p.pn==null?1:p.pn, av=p.av||"a";
+  if(av==="i") return {k:"out",t:"Injured"};
+  if(av==="s") return {k:"out",t:"Suspended"};
+  if(av==="u") return {k:"out",t:"Unavailable"};
+  if(av==="n") return {k:"out",t:"Not in squad"};
+  if(pn<=0) return {k:"out",t:"Out"};
+  if(pn<0.75||av==="d") return {k:"doubt",t:`${Math.round(pn*100)}% to play`};
+  return {k:"ok",t:"Healthy"};
+}
+function pill(p){ const a=avail(p); return a.k==="ok"?"":`<span class="pill ${a.k}">${a.t}</span>`; }
+function kick(iso){
+  if(!iso) return "";
+  const d=new Date(iso); if(isNaN(d)) return "";
+  let h=d.getHours(), m=d.getMinutes(); const ap=h>=12?"pm":"am"; h=h%12||12;
+  return `${d.toLocaleString([], {weekday:"short"})} ${h}${m?":"+String(m).padStart(2,"0"):""}${ap}`;
+}
+function fixLine(p){
+  const f=(p.nx||[])[0]; if(!f) return "";
+  return `${kick(f.t)} ${f.h?"vs":"@"} ${esc(f.opp)}`;
+}
 function flags(p){ return (p.f||[]).map(f=>{
   const hurt=/injur|doubt|suspend|unavail|fit|not in squad/.test(f);
   return `<span class="flag ${hurt?"hurt":""}">${esc(f)}</span>`; }).join(""); }
@@ -595,15 +708,14 @@ function renderClaims(){
     <div class="row ${r.pinned?"pin":""}" data-id="${r.i}">
       <div class="rank">${i+1}</div>
       <div class="main">
-        <div class="nm">${esc(r.n)}</div>
+        <div class="nm">${esc(r.n)}${pill(r)}</div>
         <div class="meta">${r.pos} &middot; ${esc(r.tm)} &middot;
           <span class="st ${stCls(r.sr)}">${Math.round(r.sr*100)}% start</span>
           &middot; ${r.pw.toFixed(1)}/wk ${flags(r)}${fdr(r)}</div>
-        <div class="why">over <b>${esc(r.over||"nobody")}</b> ${r.repl_pw!=null?`(${r.repl_pw.toFixed(1)}/wk)`:""}${r.drop&&r.drop!==r.over?` &middot; drop <b>${esc(r.drop)}</b>`:""}</div>
+        <div class="why">over <b>${esc(r.over||"nobody")}</b> ${r.repl_pw!=null?`(${r.repl_pw.toFixed(1)}/wk)`:""}${r.drop?` &middot; drop <b>${esc(r.drop)}</b>${r.drop_why?` (${esc(r.drop_why)})`:""}`:""}</div>
       </div>
       <div class="gain"><div class="g1 ${r.gain>0?"up":"down"}">${r.gain>0?"+":""}${r.gain.toFixed(1)}</div><div class="g2">pts/wk</div></div>
       <button class="star" data-pin="${r.i}" aria-label="pin">${r.pinned?"★":"☆"}</button>
-      <div class="more">form ${r.fm.toFixed(1)} &middot; ${r.tp} pts &middot; ${r.st} starts, ${r.mn} min this season${r.nw?`<br>${esc(r.nw)}`:""}</div>
     </div>`).join("") : `<div class="empty">No free agents match.</div>`;
 }
 
@@ -614,8 +726,8 @@ function renderSquad(){
     html+=`<div class="poshead"><span>${pos}</span><span>${g.length}/${(D.limits||{})[pos]||"-"}</span></div>`;
     if(!g.length){ html+=`<div class="sq"><span class="sm">none</span></div>`; continue; }
     for(const p of g){
-      html+=`<div class="sq ${p.starter?"":"bench"} ${p.repl?"repl":""}">
-        <div><div class="sn">${esc(p.n)}${p.repl?`<span class="tag r">claims beat this</span>`:p.starter?"":`<span class="tag">bench</span>`}</div>
+      html+=`<div class="sq ${p.starter?"":"bench"} ${p.repl?"repl":""}" data-id="${p.i}">
+        <div><div class="sn">${esc(p.n)}${pill(p)}${p.repl?`<span class="tag r">claims beat this</span>`:p.starter?"":`<span class="tag">bench</span>`}</div>
           <div class="sm">${esc(p.tm)} &middot; <span class="st ${stCls(p.sr)}">${Math.round(p.sr*100)}% start</span> &middot; form ${p.fm.toFixed(1)} ${flags(p)}${fdr(p)}</div></div>
         <div class="sv">${p.pw.toFixed(1)}<small>${p.tp} pts</small></div>
       </div>`;
@@ -633,10 +745,64 @@ function renderTable(){
   </table>` : `<div class="empty">Standings not loaded yet.</div>`;
 }
 
+/* The player sheet: what Yahoo shows when you tap a name, built from FPL's
+   official note plus whatever headlines matched. */
+function findPlayer(id){
+  return (D.claims||[]).find(r=>r.i===id) || (D.squad||[]).find(r=>r.i===id);
+}
+function ago2(ts){ if(!ts) return ""; const d=(Date.now()/1000-ts)/3600;
+  return d<1?"just now":d<24?`${Math.round(d)}h ago`:`${Math.round(d/24)}d ago`; }
+function openSheet(id){
+  const p=findPlayer(id); if(!p) return;
+  const a=avail(p);
+  const isClaim=p.gain!=null;
+  const drop=(D.squad||[]).find(r=>r.n===p.drop&&r.pos===p.pos);
+  const clubNews=((D.news||{}).clubs||{})[p.tm]||[];
+  const mine=new Set((p.hl||[]).map(h=>h.u));
+  const club=clubNews.filter(h=>!mine.has(h.u)).slice(0,3);
+  const availBox = `
+    <div class="box"><span class="pill ${a.k}" style="margin:0 6px 0 0">${a.t}</span>
+      ${p.nw?esc(p.nw):(a.k==="ok"?"No injury or suspension note from FPL.":"")}
+      <div class="small">${p.pn!=null?`Chance of playing next round: ${Math.round(p.pn*100)}%`:""}${p.bk?` &middot; back for GW${p.bk}${p.ms?` (misses ${p.ms} more)`:""}`:(p.ms>=(D.horizon||4)?" &middot; no return date, treated as out for the next month":"")}${p.na?` &middot; FPL note ${esc(p.na)}`:""}</div>
+    </div>`;
+  const why = isClaim ? `
+    <div class="sec"><h4>Why he is here</h4>
+      <div class="box"><b class="${p.gain>0?"up":"down"}">${p.gain>0?"+":""}${p.gain.toFixed(1)} pts/wk</b> over ${esc(p.over||"nobody")}${p.repl_pw!=null?` (${p.repl_pw.toFixed(1)}/wk)`:""}, your weakest starting ${p.pos}.
+        <div class="small">Next ${D.horizon||4} GWs: him ${p.p4.toFixed(1)} vs ${drop?`${esc(drop.n)} ${drop.p4.toFixed(1)}`:"-"}. Roster spot from <b>${esc(p.drop||"-")}</b>${p.drop_why?` (${esc(p.drop_why)})`:""}.</div>
+      </div></div>` : `
+    <div class="sec"><h4>On your team</h4>
+      <div class="box">${p.starter?(p.repl?"Your weakest starter at "+p.pos+": every claim at this position is measured against him.":"In your starting XI."):"On your bench."}
+        <div class="small">Next ${D.horizon||4} GWs: ${p.p4.toFixed(1)} pts${p.pf!=null&&Math.abs(p.pf-p.pw)>0.05?` &middot; ${p.pf.toFixed(1)}/wk when fully fit`:""}</div>
+      </div></div>`;
+  const fixes=(p.nx||[]).map(f=>`<div class="fixrow"><span>GW${f.gw} &middot; ${kick(f.t)}</span><span>${f.h?"vs":"@"} ${esc(f.opp)} <i class="d d${f.d}">${f.d}</i></span></div>`).join("");
+  const hl=(p.hl||[]).map(h=>`<a class="hl" href="${esc(h.u)}" target="_blank" rel="noopener">${esc(h.t)}<span class="src">${esc(h.src)} &middot; ${ago2(h.d)}</span></a>`).join("");
+  const cl=club.map(h=>`<a class="hl" href="${esc(h.u)}" target="_blank" rel="noopener">${esc(h.t)}<span class="src">${esc(h.src)} &middot; ${ago2(h.d)}</span></a>`).join("");
+  document.getElementById("sheet").innerHTML=`
+    <div class="handle"></div>
+    <button class="close" id="sheetClose" aria-label="close">&times;</button>
+    <h2>${esc(p.fn||p.n)}</h2>
+    <div class="who">${p.pos} &middot; ${esc(p.club||p.tm)}${fixLine(p)?` &middot; next: ${fixLine(p)}`:""}</div>
+    <div class="kpis">
+      <div class="kpi"><b>${p.pw.toFixed(1)}</b><span>proj pts / wk</span></div>
+      <div class="kpi"><b>${Math.round(p.sr*100)}%</b><span>start rate</span></div>
+      <div class="kpi"><b>${p.tp}</b><span>season pts &middot; form ${p.fm.toFixed(1)}</span></div>
+    </div>
+    <div class="sec"><h4>Availability (FPL official)</h4>${availBox}</div>
+    ${why}
+    <div class="sec"><h4>Next fixtures</h4><div class="box">${fixes||"No fixtures listed."}</div></div>
+    <div class="sec"><h4>Latest news</h4><div class="box">${hl||`<span class="small">No headline naming him in the last 10 days.</span>`}</div>
+      ${cl?`<div class="box" style="margin-top:8px"><div class="small" style="margin:0 0 4px">${esc(p.club||p.tm)} news</div>${cl}</div>`:""}</div>`;
+  document.getElementById("sheet").hidden=false; document.getElementById("scrim").hidden=false;
+  document.body.style.overflow="hidden";
+}
+function closeSheet(){ document.getElementById("sheet").hidden=true; document.getElementById("scrim").hidden=true; document.body.style.overflow=""; }
+
 document.addEventListener("click",e=>{
   const pin=e.target.closest("[data-pin]");
   if(pin){ const id=+pin.dataset.pin; pinned.has(id)?pinned.delete(id):pinned.add(id); savePins(); renderClaims(); return; }
-  const row=e.target.closest(".row"); if(row){ row.classList.toggle("open"); return; }
+  if(e.target.id==="scrim"||e.target.id==="sheetClose"){ closeSheet(); return; }
+  if(e.target.closest("#sheet")) return;
+  const row=e.target.closest(".row,[data-id].sq"); if(row){ openSheet(+row.dataset.id); return; }
   const tb=e.target.closest("#tabs button");
   if(tb){ tab=tb.dataset.t; [...tb.parentNode.children].forEach(c=>c.classList.toggle("on",c===tb));
     ["claims","squad","league"].forEach(t=>document.getElementById("tab-"+t).hidden=(t!==tab)); window.scrollTo(0,0); return; }

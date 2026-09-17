@@ -602,8 +602,18 @@ def main() -> None:
                 print("  Wrong entry id? Check:  py draft.py whoami")
                 sys.exit(2)
             error = None if is_in_season(SNAP) else "season not started yet"
+            # Headlines are best effort and never fail the build.
+            news_ctx = None
+            try:
+                import news as news_mod
+                news_ctx = news_mod.attach(players, SNAP)
+                n_hl = sum(1 for p in players if p.headlines)
+                print(f"  headlines matched for {n_hl} players")
+            except Exception as exc:        # noqa: BLE001
+                print(f"  (headlines skipped: {exc})")
             payload = mobile_mod.build_payload(players, SNAP, my_ids, owned,
-                                               mine_now, details, error)
+                                               mine_now, details, error,
+                                               news=news_ctx)
             out = os.path.abspath(args.out)
             written = mobile_mod.write_site(payload, out, repo=args.repo)
             who = next((e for e in entries

@@ -128,6 +128,9 @@ class Player:
     defcon_p90: float = 0.0            # and the same figure per 90 minutes
     fdr: list[int] = field(default_factory=list)   # next 5 fixture difficulties
     fdr_avg: float = 3.0
+    next_fix: list[dict] = field(default_factory=list)  # [{opp,h,d,gw,t}] next 5
+    chance_next: float | None = None   # FPL's own % chance of playing next round
+    news_added: str = ""               # when FPL last changed the news line
     start_pct: float = 0.0             # rough chance he starts a given week
     sleeper: dict | None = None        # curated note, see sleepers.py
     # --- filled in by season.py once real matches exist ---
@@ -141,6 +144,12 @@ class Player:
     dc_hit: float = 0.0                # estimated share of matches clearing it
     exp_minutes: float = 0.0
     proj_week: float = 0.0             # projected points next gameweek
+    proj_fit: float = 0.0              # the same, if he were fully available
+    play_next: float = 1.0             # chance of playing next round, 0-1
+    back_gw: int | None = None         # first GW available again, if flagged
+    misses: int = 0                    # GWs missed within the drop horizon
+    proj_horizon: float = 0.0          # points over the next few gameweeks
+    headlines: list[dict] = field(default_factory=list)  # from news.py
     proj: float = 0.0            # projected season points
     vorp: float = 0.0
     tier: int = 0
@@ -173,6 +182,30 @@ def next_fixtures(snap: dict, n: int = 5) -> dict[int, list[int]]:
             out.setdefault(t, [])
             if len(out[t]) < n:
                 out[t].append(int(d))
+    return out
+
+
+def next_fixture_details(snap: dict, n: int = 5) -> dict[int, list[dict]]:
+    """Next `n` fixtures per team id with opponent, venue, difficulty, GW,
+    kickoff. Same walk as next_fixtures(), kept separate so nothing that
+    only wants the difficulty strip has to change."""
+    out: dict[int, list[dict]] = {}
+    fixtures = [f for f in (snap.get("fixtures") or [])
+                if not f.get("finished") and f.get("event") is not None]
+    fixtures.sort(key=lambda f: (f.get("event") or 0,
+                                 f.get("kickoff_time") or ""))
+    for f in fixtures:
+        h, a = f.get("team_h"), f.get("team_a")
+        if h is None or a is None:
+            continue
+        for me, opp, home, diff in ((h, a, True, "team_h_difficulty"),
+                                    (a, h, False, "team_a_difficulty")):
+            out.setdefault(me, [])
+            if len(out[me]) < n:
+                out[me].append({"opp": opp, "h": home,
+                                "d": int(f.get(diff) or 3),
+                                "gw": f.get("event"),
+                                "t": f.get("kickoff_time") or ""})
     return out
 
 
@@ -259,6 +292,7 @@ def build_players(snap: dict) -> list[Player]:
     # Classic feed keyed by the stable cross-game player code.
     classic_by_code = {e["code"]: e for e in classic.get("elements", [])}
     fdr_by_team = next_fixtures(snap)
+    fix_by_team = next_fixture_details(snap)
 
     players: list[Player] = []
     for e in draft.get("elements", []):
@@ -309,6 +343,10 @@ def build_players(snap: dict) -> list[Player]:
             defcon_p90=(defcon / (last_mins / 90.0)
                         if defcon and last_mins and last_mins > 600 else 0.0),
             fdr=fdr_by_team.get(e.get("team"), []),
+            next_fix=[dict(fx, opp=team_by_id.get(fx["opp"], ("?", "?"))[1])
+                      for fx in fix_by_team.get(e.get("team"), [])],
+            chance_next=(float(chance_raw) if chance_raw is not None else None),
+            news_added=e.get("news_added") or "",
             flags=flags,
         ))
     for p in players:

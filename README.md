@@ -47,6 +47,29 @@ How it behaves:
 - GitHub pauses scheduled workflows after 60 days with no commits, and emails
   you first. Any commit resets the clock.
 
+### Tap a player
+
+Every name on the phone board opens a detail sheet: FPL's official
+availability note with the chance of playing next round and the gameweek he
+is back, his next five fixtures with opponents and kick-off times, why he is
+on the list, and the latest headlines that name him plus his club's recent
+news.
+
+Two different things are called "news" here, and only one moves the numbers:
+
+- **FPL's availability note** ("Knee injury - Expected back 25 Sep",
+  "Suspended until 20 Sep", "75% chance of playing") is the Premier League's
+  own line and it is structured. The model uses it: a player at 0% projects
+  nothing next week, the return date sets how many gameweeks he misses, and
+  the **drop** suggestion is the man with the least to offer over the next
+  four gameweeks, not next week alone. So a starter back next week is not
+  dropped ahead of a fit passenger, and a man out until November is.
+- **Headlines** come from open RSS feeds (BBC Sport's club feeds, BBC, Sky
+  Sports and the Guardian football feeds; no key, no login). They are shown
+  for you to read, never fed into the model, because "could start on
+  Saturday" in a headline is not a fact the way a 0% flag is. If a feed is
+  down the sheet just says no headline was found.
+
 ### The Wi-Fi one
 
 ```powershell
@@ -444,6 +467,7 @@ python3 draft.py --snapshot mock_snapshot.json --teams 8 live
 | `season.py` | in-season projections and gain-over-your-starter scoring |
 | `waivers.py` | the desktop waiver page |
 | `mobile.py` | the phone waiver page, Wi-Fi and GitHub-hosted |
+| `news.py` | headlines from open RSS feeds for the player sheet |
 | `.github/workflows/waivers.yml` | the scheduled GitHub build |
 | `export_xlsx.py` | builds the Excel workbook |
 | `sync.py` | reads your league's live draft record |

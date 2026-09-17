@@ -32,6 +32,9 @@ Two other things the draft model could not do and this one can:
 
 from __future__ import annotations
 
+import re
+from datetime import date
+
 from model import SQUAD_LIMITS, Player
 
 # How many matches of evidence before per-90 output is trusted at face value.
@@ -45,6 +48,101 @@ BASELINE_P90 = {"GKP": 3.2, "DEF": 3.0, "MID": 3.2, "FWD": 3.0}
 
 # Defensive contribution thresholds, unchanged for 2026/27.
 DC_THRESHOLD = {"DEF": 10, "MID": 12, "FWD": 12, "GKP": 999}
+
+# How far ahead the drop decision looks. A man out for a month is a better
+# drop than a fit rotation player; a man back next week usually is not.
+HORIZON_GWS = 4
+
+# FPL's own availability letter, as a chance of playing next round when the
+# feed gives no percentage. Injured/suspended with no number means out.
+STATUS_PLAY = {"a": 1.0, "d": 0.5, "i": 0.0, "s": 0.0, "u": 0.0, "n": 0.15}
+
+_MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct",
+     "nov", "dec"], start=1)}
+_DATE_RE = re.compile(r"\b(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*",
+                      re.I)
+_VAGUE_RE = re.compile(r"\b(early|mid|late)\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*",
+                       re.I)
+
+
+def upcoming_events(snap: dict) -> list[dict]:
+    """Gameweeks still to play, in order, from bootstrap-static's events."""
+    ev = (snap.get("draft") or {}).get("events") or {}
+    data = ev.get("data") if isinstance(ev, dict) else ev
+    if not isinstance(data, list):
+        return []
+    gw = current_event(snap)
+    out = [e for e in data if isinstance(e, dict) and (e.get("id") or 0) > gw]
+    out.sort(key=lambda e: e.get("id") or 0)
+    return out
+
+
+def parse_return_date(news: str, today: date | None = None) -> date | None:
+    """The date FPL's note says a player is back, if it names one.
+
+    FPL writes things like "Knee injury - Expected back 25 Sep",
+    "Suspended until 20 Sep" or "Expected back early October". A note with
+    no date returns None, which the caller treats as out for the horizon.
+    """
+    if not news:
+        return None
+    today = today or date.today()
+    m = _DATE_RE.search(news)
+    day = mon = None
+    if m:
+        day, mon = int(m.group(1)), _MONTHS[m.group(2)[:3].lower()]
+    else:
+        v = _VAGUE_RE.search(news)
+        if v:
+            day = {"early": 5, "mid": 15, "late": 25}[v.group(1).lower()]
+            mon = _MONTHS[v.group(2)[:3].lower()]
+    if not mon:
+        return None
+    year = today.year
+    # A month well behind us means next calendar year (Jan return, said in Nov).
+    if mon < today.month - 6:
+        year += 1
+    try:
+        return date(year, mon, min(day or 1, 28))
+    except ValueError:
+        return None
+
+
+def return_gw(p: Player, snap: dict, today: date | None = None) -> tuple[int | None, int]:
+    """(first gameweek he can play again, how many of the next HORIZON_GWS
+    he misses). (None, 0) for anyone not flagged.
+
+    A flagged player with no date in the note is assumed out for the whole
+    horizon, which is the conservative reading and what the note usually
+    means when FPL leaves the date off.
+    """
+    events = upcoming_events(snap)
+    if not events:
+        return None, 0
+    nxt = events[0].get("id")
+    p_next = play_next(p)
+    if p_next >= 0.75:
+        return None, 0
+    back = parse_return_date(p.news, today)
+    horizon = events[:HORIZON_GWS]
+    if back is None:
+        if p_next > 0:
+            return nxt, 0          # a doubt, not an absence
+        return None, len(horizon)
+    for i, e in enumerate(horizon):
+        dl = (e.get("deadline_time") or "")[:10]
+        if dl and dl >= back.isoformat():
+            return e.get("id"), i
+    return None, len(horizon)
+
+
+def play_next(p: Player) -> float:
+    """Chance of playing next round: FPL's own percentage when given, else
+    read from the availability letter."""
+    if p.chance_next is not None:
+        return max(0.0, min(1.0, p.chance_next / 100.0))
+    return STATUS_PLAY.get((p.status or "a").lower(), 1.0)
 
 # Used to turn the preseason model's full-season projection into a weekly
 # rate for players with no in-season minutes to observe yet.
@@ -109,11 +207,18 @@ def enrich(players: list[Player], snap: dict) -> None:
         p.dc_hit = max(0.0, min(0.95, (p.dc_p90 - thr * 0.55) / (thr * 0.75))) \
             if p.dc_p90 > 0 else 0.0
 
-        # Expected minutes next week. Availability is already a 0-1 multiplier.
-        exp_mins = 90.0 * p.start_rate * p.chance
+        # Expected minutes when fit: start rate plus a bench allowance.
+        fit_mins = 90.0 * p.start_rate
         if p.start_rate < 0.5 and mins > 0:
             # A rotation player still gets some minutes off the bench.
-            exp_mins = max(exp_mins, min(35.0, mins / max(1.0, gw)))
+            fit_mins = max(fit_mins, min(35.0, mins / max(1.0, gw)))
+        p.proj_fit = p.p90 * (fit_mins / 90.0)
+
+        # Next week uses FPL's own chance of playing next round, which is
+        # the official injury note turned into a number. A player at 0% does
+        # not project 55% of his value next week, he projects nothing.
+        p.play_next = play_next(p)
+        exp_mins = fit_mins * p.play_next
         p.exp_minutes = exp_mins
         p.proj_week = p.p90 * (exp_mins / 90.0)
 
@@ -137,8 +242,18 @@ def enrich(players: list[Player], snap: dict) -> None:
             from_draft_model = (p.proj / WEEKS_IN_SEASON) if p.proj > 0 else 0.0
             from_next_round = p.ep_next * p.chance
             p.proj_week = max(from_draft_model, from_next_round)
+            p.proj_fit = max(p.proj_fit, p.proj_week)
             if "NEW" not in p.flags:
                 p.flags = p.flags + ["NEW"]
+
+        # The next HORIZON_GWS weeks, reading the injury note for a return
+        # date. This is what decides who to drop: a man back next week keeps
+        # most of his value, a man out for a month has none to lose.
+        p.back_gw, p.misses = return_gw(p, snap)
+        weeks = [p.proj_week]
+        for k in range(1, HORIZON_GWS):
+            weeks.append(0.0 if k < p.misses else p.proj_fit)
+        p.proj_horizon = sum(weeks)
 
 
 def my_replacement(my_squad: list[Player], pos: str) -> float:
@@ -188,6 +303,10 @@ def waiver_targets(players: list[Player], owned: set[int], my_ids: set[int],
 
 
 def drop_candidates(players: list[Player], my_ids: set[int]) -> list[Player]:
-    """Your own squad, weakest first, for deciding who makes way."""
+    """Your own squad, weakest first, for deciding who makes way.
+
+    Ordered by the next-month projection rather than next week's, so an
+    injured player who is back soon is not dropped ahead of a fit passenger.
+    """
     mine = [p for p in players if p.draft_id in my_ids]
-    return sorted(mine, key=lambda p: (p.proj_week, p.start_rate))
+    return sorted(mine, key=lambda p: (p.proj_horizon, p.proj_week, p.start_rate))

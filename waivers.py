@@ -212,8 +212,10 @@ function replName(pos){
   const n = Math.min(STARTERS[pos]||3, g.length);
   return g[n-1].n;
 }
+/* Who makes way: lowest projection over the next month, so a man back next
+   week is not dropped ahead of a fit passenger. */
 function weakestAt(pos){
-  const g = mySquad().filter(p=>p.pos===pos).sort((a,b)=>a.pw-b.pw);
+  const g = mySquad().filter(p=>p.pos===pos).sort((a,b)=>(a.p4??a.pw*4)-(b.p4??b.pw*4)||a.pw-b.pw);
   return g[0]||null;
 }
 
@@ -392,6 +394,7 @@ def build(players: list[Player], my_ids: set[int], owned: set[int],
         rows.append({
             "i": p.draft_id, "n": p.name, "pos": p.pos, "tm": p.team_short,
             "pw": round(p.proj_week, 2), "sr": round(p.start_rate, 2),
+            "p4": round(getattr(p, "proj_horizon", p.proj_week * 4), 2),
             "ch": round(p.chance, 2), "fm": round(p.form, 1),
             "tp": int(p.season_points),
             "fdr": p.fdr[:5], "f": p.flags[:3],
