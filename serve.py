@@ -15,14 +15,15 @@ every few seconds and updates.
 
     py draft.py serve --league 721 --entry 2438
 
-Then open http://localhost:8777. The dashboard is generated fresh on each page
-load, so projections stay current with whatever `fetch` last cached.
+Then open http://localhost:8777. The same server can also listen on your home
+network (`lan=True`), which is how the phone page in mobile.py reaches it.
 """
 
 from __future__ import annotations
 
 import http.server
 import json
+import socket
 import socketserver
 import threading
 import time
@@ -30,6 +31,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 from functools import partial
+from typing import Callable
 
 DRAFT_BASE = "https://draft.premierleague.com/api"
 HEADERS = {
@@ -63,11 +65,23 @@ CACHE = _Cache()
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    """Serves one page and proxies a handful of read-only endpoints."""
+    """Serves a few pages and proxies a handful of read-only endpoints.
 
-    def __init__(self, *args, html: str = "", league: int = 0, **kwargs):
+    `pages` maps a path to HTML, `blobs` maps a path to (bytes, content-type),
+    and `routes` maps a path to a zero-argument callable returning JSON bytes.
+    Anything under /api/ not in `routes` is a proxy to the Draft API.
+    """
+
+    def __init__(self, *args, html: str = "", league: int = 0,
+                 pages: dict[str, str] | None = None,
+                 blobs: dict[str, tuple[bytes, str]] | None = None,
+                 routes: dict[str, Callable[[], bytes]] | None = None,
+                 **kwargs):
         self.html = html
         self.league = league
+        self.pages = pages or {}
+        self.blobs = blobs or {}
+        self.routes = routes or {}
         super().__init__(*args, **kwargs)
 
     # Quieten the default per-request logging; polling would flood the console.
@@ -110,6 +124,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path in ("/", "/index.html"):
             self._send(200, self.html.encode("utf-8"), "text/html; charset=utf-8")
+        elif path in self.pages:
+            self._send(200, self.pages[path].encode("utf-8"),
+                       "text/html; charset=utf-8")
+        elif path in self.blobs:
+            body, ctype = self.blobs[path]
+            self._send(200, body, ctype)
+        elif path in self.routes:
+            try:
+                self._send(200, self.routes[path](), "application/json")
+            except Exception as exc:        # noqa: BLE001
+                self._send(500, json.dumps({"error": str(exc)}).encode(),
+                           "application/json")
         elif path == "/api/choices":
             self._proxy(f"draft/{self.league}/choices")
         elif path == "/api/league":
@@ -129,12 +155,36 @@ class Server(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
+def lan_ip() -> str | None:
+    """The address other devices on your Wi-Fi can reach this PC at.
+
+    Opens a UDP socket toward a public address and reads back which local
+    interface the OS would use. Nothing is actually sent.
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+        finally:
+            s.close()
+        return ip if not ip.startswith("127.") else None
+    except OSError:
+        return None
+
+
 def serve(html: str, league: int, port: int = 8777,
-          open_browser: bool = True) -> None:
-    handler = partial(Handler, html=html, league=league)
+          open_browser: bool = True, lan: bool = False,
+          pages: dict[str, str] | None = None,
+          blobs: dict[str, tuple[bytes, str]] | None = None,
+          routes: dict[str, Callable[[], bytes]] | None = None,
+          open_path: str = "/", banner: str = "Live draft dashboard") -> None:
+    handler = partial(Handler, html=html, league=league, pages=pages,
+                      blobs=blobs, routes=routes)
+    host = "0.0.0.0" if lan else "127.0.0.1"
     for attempt in range(12):
         try:
-            httpd = Server(("127.0.0.1", port + attempt), handler)
+            httpd = Server((host, port + attempt), handler)
             break
         except OSError:
             continue                       # port busy, try the next one
@@ -142,12 +192,29 @@ def serve(html: str, league: int, port: int = 8777,
         print(f"  Could not bind any port from {port} to {port + 11}.")
         return
 
-    url = f"http://localhost:{httpd.server_address[1]}"
-    print(f"\n  Live draft dashboard: {url}")
+    bound = httpd.server_address[1]
+    url = f"http://localhost:{bound}"
+    print(f"\n  {banner}: {url}{open_path}")
+    ip = lan_ip() if lan else None
+    phone_url = f"http://{ip}:{bound}/m" if ip else f"{url}/m"
+    # Pages only learn the phone address once a port is bound, so any page
+    # carrying this token is filled in here.
+    if pages:
+        for k, v in list(pages.items()):
+            pages[k] = v.replace("__PHONE_URL__", phone_url)
+    if lan:
+        if ip:
+            print(f"  On your phone (same Wi-Fi):  {phone_url}")
+            print(f"  QR code to scan:             {url}/qr")
+        else:
+            print("  Could not work out this PC's Wi-Fi address. Try `ipconfig`"
+                  " and use the IPv4 address with port", bound)
+        print("  If Windows asks whether Python may use the network, allow it"
+              " on private networks.")
     print(f"  Watching league {league}. Polls every few seconds.")
-    print("  Leave this window open for the whole draft. Ctrl+C to stop.\n")
+    print("  Leave this window open. Ctrl+C to stop.\n")
     if open_browser:
-        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.6, lambda: webbrowser.open(url + open_path)).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

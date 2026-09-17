@@ -8,6 +8,58 @@ to take on the clock.
 
 ---
 
+## In season: the waiver board on your phone, no PC needed
+
+The draft is done, so the part that matters now is waivers. `waivers.py`
+scores every free agent against **your own weakest starter** and lists claims
+in the order to submit them. Three ways to look at it:
+
+| | Command | Where it runs |
+|---|---|---|
+| Desktop page | `py draft.py waivers` | your PC, `localhost:8787` |
+| Phone page over Wi-Fi | `py draft.py mobile` | your PC, phone on the same Wi-Fi |
+| Phone page, hosted | GitHub Actions runs `py draft.py publish` | GitHub, from anywhere |
+
+### The hosted one (set up once, then forget it)
+
+GitHub runs the Python every 30 minutes and hosts the result as a page. Open
+it on the phone from anywhere and add it to the home screen.
+
+1. Repo → **Settings → Pages** → Source: **GitHub Actions**
+2. Repo → **Settings → Secrets and variables → Actions → Variables** tab →
+   New repository variable, twice: `FPL_LEAGUE` = your league id,
+   `FPL_ENTRY` = your entry id (`py draft.py whoami --league <id>` lists them)
+3. Repo → **Actions → Waiver board → Run workflow**
+
+About a minute later the page is at
+`https://dancane19-creator.github.io/fpldraftboard/`. In Safari: Share →
+**Add to Home Screen**.
+
+How it behaves:
+
+- Rebuilds at :07 and :37 every hour. GitHub's scheduler can run late when it
+  is busy; the page shows how old the board is, and **Run now** at the bottom
+  takes you to the button that forces a rebuild.
+- The page keeps the last board it saw, so it opens instantly and works
+  offline, stamped with its age. Pins (the star) are stored on the phone.
+- If a run fails (the FPL API goes down for an hour some weeks) the previous
+  board stays up; nothing is replaced by an error page.
+- GitHub pauses scheduled workflows after 60 days with no commits, and emails
+  you first. Any commit resets the clock.
+
+### The Wi-Fi one
+
+```powershell
+py draft.py mobile
+```
+
+Same page, served from your PC to your phone on the same Wi-Fi, refreshing
+every 30 seconds. The PC prints the address and opens a QR code to scan. The
+first time, Windows asks whether Python may use the network: allow it on
+**private** networks.
+
+---
+
 ## The league ID question
 
 **You don't need one.** This is the main thing to clear up before today.
@@ -389,6 +441,10 @@ python3 draft.py --snapshot mock_snapshot.json --teams 8 live
 | `strategy_test.py` | VORP vs naive comparison |
 | `dashboard.py` | builds the dashboard, live and manual |
 | `serve.py` | local server + API proxy for live mode |
+| `season.py` | in-season projections and gain-over-your-starter scoring |
+| `waivers.py` | the desktop waiver page |
+| `mobile.py` | the phone waiver page, Wi-Fi and GitHub-hosted |
+| `.github/workflows/waivers.yml` | the scheduled GitHub build |
 | `export_xlsx.py` | builds the Excel workbook |
 | `sync.py` | reads your league's live draft record |
 | `find_league.py` | finds your league ID |

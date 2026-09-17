@@ -363,6 +363,21 @@ def main() -> None:
     wv.add_argument("--dump", metavar="FILE", nargs="?", const="waiver-data.csv",
                     help="write every free agent and your squad to a small CSV "
                          "you can attach to a chat, then exit")
+    mb = new("mobile", help="waiver board for your phone, served over home Wi-Fi")
+    mb.add_argument("--league", type=int, help="your league ID")
+    mb.add_argument("--entry", type=int, help="your entry id")
+    mb.add_argument("--port", type=int, default=8797)
+    mb.add_argument("--no-open", action="store_true",
+                    help="do not open the QR page on this PC")
+    mb.add_argument("--local", action="store_true",
+                    help="localhost only, no Wi-Fi access (for testing)")
+    pb = new("publish", help="write the phone board as a static site "
+                             "(what the GitHub workflow runs)")
+    pb.add_argument("--league", type=int, help="your league ID (or env FPL_LEAGUE)")
+    pb.add_argument("--entry", type=int, help="your entry id (or env FPL_ENTRY)")
+    pb.add_argument("-o", "--out", default="site", help="output folder")
+    pb.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""),
+                    help="owner/name, for the 'Run now' link on the page")
     sv = new("serve", help="live dashboard that follows your league")
     sv.add_argument("--league", type=int, help="your league ID")
     sv.add_argument("--entry", type=int, help="your entry id")
@@ -538,8 +553,107 @@ def main() -> None:
 
         html = build_waivers(players, my_ids, owned, mine_now, gw,
                              sample=SAMPLE_DATA)
+        print("  Want it on your phone?  py draft.py mobile   (see README)")
         from serve import serve as run_server
-        run_server(html, league, port=args.port, open_browser=not args.no_open)
+        run_server(html, league, port=args.port, open_browser=not args.no_open,
+                   banner="Waiver board")
+    elif cmd in ("mobile", "publish"):
+        import mobile as mobile_mod
+        import sync as sync_mod
+        from season import enrich, is_in_season, current_event
+
+        def _env_int(name: str) -> int | None:
+            v = os.environ.get(name, "").strip()
+            return int(v) if v.isdigit() else None
+
+        # Flags win, then the environment (how the GitHub workflow passes
+        # them), then whatever was saved last time.
+        league = args.league or _env_int("FPL_LEAGUE") or state.get("league")
+        if not league:
+            print(f"  Need a league ID:  py draft.py {cmd} --league 721 --entry 2438")
+            return
+        state["league"] = league
+        entry = args.entry or _env_int("FPL_ENTRY")
+        if entry:
+            state["entry"] = entry
+        save_state(state)
+        chosen = state.get("entry")
+
+        gw = current_event(SNAP)
+        enrich(players, SNAP)
+
+        if cmd == "publish":
+            # Static site for GitHub Pages. Any failure here must fail the
+            # job, so the previous good board stays up rather than being
+            # replaced by an error page.
+            from fpl_data import _get_json
+            if not chosen:
+                print("  Need your entry id: py draft.py publish --entry <n> "
+                      "(or set FPL_ENTRY). List them: py draft.py whoami")
+                sys.exit(2)
+            details = _get_json(sync_mod.LEAGUE_DETAILS.format(league))
+            entries = sync_mod.league_entries(league)
+            my_ids = sync_mod.my_id_set(entries, chosen)
+            _, owners = sync_mod.draft_picks(league)
+            owned = set(owners)
+            mine_now = {el for el, ow in owners.items() if ow in my_ids}
+            if not mine_now:
+                print(f"  Entry {chosen} owns no players in league {league}.")
+                print("  Wrong entry id? Check:  py draft.py whoami")
+                sys.exit(2)
+            error = None if is_in_season(SNAP) else "season not started yet"
+            payload = mobile_mod.build_payload(players, SNAP, my_ids, owned,
+                                               mine_now, details, error)
+            out = os.path.abspath(args.out)
+            written = mobile_mod.write_site(payload, out, repo=args.repo)
+            who = next((e for e in entries
+                        if chosen in (e["entry_id"], e["id"])), None)
+            print(f"  {who['team'] if who else chosen}: GW{gw} played, "
+                  f"{len(payload['claims'])} free agents scored, "
+                  f"XI {payload['xi']} pts/wk")
+            print(f"  wrote {len(written)} files to {out}")
+            return
+
+        # mobile: serve over Wi-Fi from this PC.
+        from waivers import build as build_waivers
+        if not is_in_season(SNAP):
+            print("  The season has not started, so there is nothing to claim.")
+            return
+        if not chosen:
+            print("  Which entry is you? Re-run with --entry <number>:")
+            try:
+                for e in sync_mod.league_entries(league):
+                    print(f"    --entry {e['entry_id']:<8} {e['team']:<26} {e['manager']}")
+            except RuntimeError as exc:
+                print(f"  (could not list the league: {exc})")
+            return
+        my_ids = {chosen}
+        try:
+            entries = sync_mod.league_entries(league)
+            my_ids = sync_mod.my_id_set(entries, chosen)
+            who = next((e for e in entries
+                        if chosen in (e["entry_id"], e["id"])), None)
+            if who:
+                print(f"\n  You are '{who['team']}' - GW{gw} played")
+        except RuntimeError as exc:
+            print(f"  Could not reach the league yet: {exc}")
+            print("  Serving anyway; the feed retries every 20s.")
+
+        feed = mobile_mod.MobileFeed(players, SNAP, league, my_ids,
+                                     reload=not getattr(args, "snapshot", None)
+                                     ).start()
+        desktop = build_waivers(players, my_ids, set(feed.owned), set(feed.mine),
+                                gw, sample=SAMPLE_DATA)
+        page = mobile_mod.render_page("/api/mobile", static=False)
+        pages = {"/m": page, "/mobile": page, "/qr": mobile_mod.QR_PAGE}
+        blobs = {"/icon.png": (mobile_mod.icon_png(), "image/png"),
+                 "/manifest.webmanifest": (mobile_mod.manifest("/m").encode(),
+                                           "application/manifest+json")}
+        routes = {"/api/mobile": feed.payload_bytes}
+        from serve import serve as run_server
+        run_server(desktop, league, port=args.port, open_browser=not args.no_open,
+                   lan=not args.local, pages=pages, blobs=blobs, routes=routes,
+                   open_path="/qr", banner="Desktop waiver board")
     elif cmd == "serve":
         import sync as sync_mod
         from dashboard import build
