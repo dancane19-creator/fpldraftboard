@@ -612,7 +612,7 @@ PAGE = r"""<!DOCTYPE html>
 <script>
 /* Filled in by Python. On the PC server the page polls /api/mobile every 30s;
    published to GitHub Pages it reads data.json, which the workflow rewrites. */
-const DATA_URL="__DATA_URL__", STATIC=__STATIC__, REPO="__REPO__";
+const DATA_URL="__DATA_URL__", STATIC=__STATIC__, REPO="__REPO__", BUILD_ID="__BUILD_ID__";
 const POS=["GKP","DEF","MID","FWD"];
 let D=null, pinned=new Set(), posFilter=null, tab="claims", lastFetch=0;
 
@@ -827,7 +827,17 @@ async function poll(manual){
   try{
     const r=await fetch(DATA_URL+(STATIC?"?t="+Date.now():""),{cache:"no-store"});
     if(!r.ok) throw new Error("HTTP "+r.status);
-    D=await r.json(); lastFetch=Date.now(); saveCache(); render();
+    D=await r.json(); lastFetch=Date.now(); saveCache();
+    /* A newer deploy than the page we are running: reload once so the UI
+       matches the data. Caches (Safari, the CDN) can hold the old page for
+       ten minutes otherwise. The query string defeats the cache; the
+       sessionStorage flag stops any chance of a loop. */
+    if(STATIC && D.build_id && BUILD_ID && D.build_id!==BUILD_ID){
+      let done=false; try{ done=sessionStorage.getItem("reloaded-"+D.build_id); }catch(e){}
+      if(!done){ try{ sessionStorage.setItem("reloaded-"+D.build_id,"1"); }catch(e){}
+        location.replace(location.pathname+"?b="+D.build_id); return; }
+    }
+    render();
     if(STATIC) setStatus(D.error?"stale":"live", `${D.error?"stale":"synced"} ${ago(D.built)} · GW${D.gw} done`);
     else setStatus(D.error?"stale":"live", D.error?"stale":`live · GW${D.gw} done`);
   }catch(e){
@@ -849,10 +859,11 @@ setInterval(()=>{ if(D) document.getElementById("upd").textContent=`board ${ago(
 
 
 def render_page(data_url: str = "/api/mobile", static: bool = False,
-                repo: str = "") -> str:
+                repo: str = "", build_id: str = "") -> str:
     return (PAGE.replace("__DATA_URL__", data_url)
                 .replace("__STATIC__", "true" if static else "false")
-                .replace("__REPO__", repo))
+                .replace("__REPO__", repo)
+                .replace("__BUILD_ID__", build_id))
 
 
 def manifest(start_url: str = "/m") -> str:
@@ -878,8 +889,13 @@ def write_site(payload: dict, out_dir: str, repo: str = "") -> list[str]:
     """
     import os
     os.makedirs(out_dir, exist_ok=True)
+    # Stamped into both files so the page can tell when a newer deploy has
+    # landed and reload itself past any cache.
+    build_id = (os.environ.get("GITHUB_SHA") or "")[:7] or str(int(time.time()))
+    payload = dict(payload, build_id=build_id)
     files = {
-        "index.html": render_page("data.json", static=True, repo=repo).encode("utf-8"),
+        "index.html": render_page("data.json", static=True, repo=repo,
+                                  build_id=build_id).encode("utf-8"),
         "data.json": json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         "icon.png": icon_png(),
         "manifest.webmanifest": manifest("./").encode("utf-8"),
